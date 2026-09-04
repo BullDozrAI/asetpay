@@ -203,3 +203,30 @@ def test_abandoned_experiments_default_to_false_and_remain_countable(conn) -> No
     total = conn.execute("SELECT count(*) FROM experiments").fetchone()[0]
     kept = conn.execute("SELECT count(*) FROM experiments WHERE NOT abandoned").fetchone()[0]
     assert total == 3 and kept == 1, "all three trials count toward the deflation"
+
+
+def test_the_migration_records_that_it_ran(conn):
+    """`make db` used to re-apply this file, print ten ERROR lines, and exit 0.
+    A half-applied migration was indistinguishable from a clean one, which makes
+    P1-02b's "rebuildable from snapshots plus migrations" untestable.
+
+    The row is inserted LAST, so under ON_ERROR_STOP a failure anywhere above
+    leaves the migration correctly reported as not applied.
+    """
+    got = conn.execute(
+        "SELECT version FROM schema_migrations WHERE version = '001_security_master'"
+    ).fetchone()
+    assert got, "the migration did not record itself in schema_migrations"
+
+
+def test_recording_the_migration_twice_is_harmless(conn):
+    """The guard lives in the Makefile; this asserts the file itself cannot
+    corrupt the ledger if it is somehow run again."""
+    conn.execute(
+        "INSERT INTO schema_migrations (version) VALUES ('001_security_master') "
+        "ON CONFLICT (version) DO NOTHING"
+    )
+    n = conn.execute(
+        "SELECT count(*) FROM schema_migrations WHERE version = '001_security_master'"
+    ).fetchone()[0]
+    assert n == 1
