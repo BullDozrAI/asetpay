@@ -8,3 +8,20 @@ __pycache__/
 data/
 dist/
 *.egg-info/
+
+# coverage
+.coverage
+htmlcov/
+coverage.xml
+
+# editors
+.idea/
+.vscode/
+
+# Windows
+Thumbs.db
+desktop.ini
+
+# stray local db/data files outside data/
+*.duckdb
+*.parquet

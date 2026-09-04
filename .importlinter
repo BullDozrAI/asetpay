@@ -1,6 +1,8 @@
 # P1-13 — architectural rules enforced in CI, not in code review.
 [importlinter]
-root_packages = asetpay_contracts, asetpay_core
+root_packages =
+    asetpay_contracts
+    asetpay_core
 include_external_packages = True
 
 [importlinter:contract:1]
