@@ -11,6 +11,26 @@
 CREATE EXTENSION IF NOT EXISTS btree_gist;
 
 -- ---------------------------------------------------------------------------
+-- Which migrations have been applied.
+--
+-- This file is NOT idempotent, and deliberately so: a migration is a statement
+-- about a transition, and CREATE TABLE IF NOT EXISTS everywhere would let a
+-- file be edited after it had run somewhere, which is how two databases that
+-- both claim version 001 end up with different schemas.
+--
+-- So instead the file records that it ran, and `make db` refuses to run it a
+-- second time. Re-applying used to produce ten ERROR lines and exit 0 — a
+-- half-applied migration was indistinguishable from a clean one, which makes
+-- P1-02b's "rebuildable from snapshots plus migrations" untestable.
+--
+-- A change to an applied migration is a NEW FILE, never an edit.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS schema_migrations (
+    version    text PRIMARY KEY,
+    applied_at timestamptz NOT NULL DEFAULT now()
+);
+
+-- ---------------------------------------------------------------------------
 -- Securities. asset_id is permanent and never reused.
 -- ---------------------------------------------------------------------------
 CREATE TABLE security_master (
@@ -146,3 +166,8 @@ CREATE TABLE experiments (
 );
 
 CREATE INDEX experiments_by_agent ON experiments (agent_id, created_at DESC);
+
+-- Recorded last: if anything above failed under ON_ERROR_STOP, this never runs,
+-- and the migration is correctly reported as not applied.
+INSERT INTO schema_migrations (version) VALUES ('001_security_master')
+    ON CONFLICT (version) DO NOTHING;
