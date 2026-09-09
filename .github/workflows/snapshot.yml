@@ -28,8 +28,20 @@ on:
 permissions:
   contents: write            # needed to create releases
 
+# Scoped PER SESSION, not globally.
+#
+# A global group holds exactly one pending run: GitHub keeps the in-flight job
+# (cancel-in-progress: false protects that) but a newly queued run DISPLACES
+# the one already waiting. Backfilling 09-01, 09-02 and 09-03 five seconds
+# apart landed the first and third and silently cancelled the second — no
+# error, no alert, just a hole in the history. A twenty-day backfill would have
+# lost most of it the same way, and the gap detector only inspects the NEWEST
+# release, so nothing downstream would have noticed.
+#
+# Per-session still prevents the thing the group was for — two captures of the
+# same day racing each other — while letting different days queue independently.
 concurrency:
-  group: snapshot
+  group: snapshot-${{ inputs.session || 'scheduled' }}
   cancel-in-progress: false  # never cancel a capture in flight
 
 jobs:
