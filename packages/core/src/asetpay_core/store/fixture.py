@@ -66,9 +66,19 @@ class FixtureStoreView:
             .reset_index(drop=True)
         )
 
-    def universe(self, universe_id: str = "all") -> list[AssetId]:
+    def universe(self, universe_id: str) -> list[AssetId]:
         """Names that were live at knowledge_time — INCLUDING ones that have
-        since delisted. Excluding them here is exactly survivorship bias."""
+        since delisted. Excluding them here is exactly survivorship bias.
+
+        The fixture holds exactly one universe. Asking for any other name raises
+        rather than quietly handing back all 500 synthetic names, which would
+        look plausible and be wrong. Per the Store Protocol, an unknown universe
+        is a KeyError and never an empty list.
+        """
+        if universe_id != "all":
+            raise KeyError(
+                f"the fixture has only the 'all' universe, asked for {universe_id!r}"
+            )
         df = self._root._prices
         kt = self._kt.isoformat()
         live = df.loc[df["event_date"] <= kt, ["asset_id", "event_date"]]

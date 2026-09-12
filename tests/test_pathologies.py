@@ -72,8 +72,22 @@ def test_a_delisted_name_is_present_in_the_universe_before_it_died(store) -> Non
     """The bias is not just dropping delisted names from today's universe. It is
     dropping them from PAST universes, where they were tradeable."""
     d = store.truth["delistings"][0]
-    before = store.as_of(_d(d["delisting_date"]) - timedelta(days=30)).universe()
+    before = store.as_of(_d(d["delisting_date"]) - timedelta(days=30)).universe("all")
     assert d["asset_id"] in before, "a live name is missing from its own era"
+
+
+def test_an_unknown_universe_is_refused_rather_than_quietly_answered(store) -> None:
+    """The negative control for the line above.
+
+    universe() used to default to "all" and then ignore the argument, so asking
+    for "sp500" handed back all 500 synthetic names — plausible-looking and
+    wrong. The Protocol now specifies KeyError, and specifies it is NOT an empty
+    list: downstream, an empty universe reads as "nothing to trade today" and a
+    backtest records a flat day instead of failing.
+    """
+    view = store.as_of(_d(store.truth["delistings"][0]["delisting_date"]))
+    with pytest.raises(KeyError, match="sp500"):
+        view.universe("sp500")
 
 
 def test_every_delisting_carries_its_final_return(store) -> None:

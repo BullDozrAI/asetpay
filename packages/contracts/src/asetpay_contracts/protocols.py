@@ -64,6 +64,27 @@ class StoreView(Protocol):
         A universe that silently drops delisted names is survivorship bias. A
         universe that includes them without their delisting returns is ALSO
         survivorship bias, because the losses never register.
+
+        Raises KeyError if no such universe existed at knowledge_time. NOT an
+        empty list: downstream, an empty universe reads as "nothing to trade
+        today" rather than "you asked for something that does not exist", and a
+        backtest then records a flat day instead of failing. A store answering
+        this from SQL must check for the absent name rather than let a WHERE
+        clause return zero rows.
+        """
+        ...
+
+    def resolve_ticker(self, ticker: str) -> AssetId | None:
+        """Which asset did this ticker mean at knowledge_time? None if none did.
+
+        Present because the ticker -> asset mapping is itself bitemporal. A
+        backtest that resolves tickers with today's mapping merges two unrelated
+        companies into one fictional firm, which is the trap truth.json plants.
+
+        Deliberately ticker-specific rather than resolve_identifier(type, value):
+        asset_identifiers anticipates CUSIP and ISIN someday, but exactly one
+        identifier type is in use, and a Protocol method is an obligation on
+        every implementation.
         """
         ...
 
@@ -122,11 +143,30 @@ class CostModel(Protocol):
     This is why the model must be PER-NAME and liquidity-dependent. A flat
     basis-point assumption understates small-cap costs specifically — and small
     caps are exactly where a naive backtest finds its most exciting fake results.
+
+    FOUR ASSUMPTIONS, CHOSEN RATHER THAN INHERITED
+    ----------------------------------------------
+    long-only       The system does not short, so there is no borrow cost here.
+                    Say so out loud: a later reader must not assume otherwise,
+                    and adding shorts means adding a term to this Protocol.
+    round trip      Exactly 2 x one_way_bps. The 2-6 bps (large cap) and 25-70
+                    bps (small cap) bands quoted above are ROUND-TRIP figures,
+                    so a validation test doubles the one-way number.
+    participation   Held inside the implementation, which must document the rate
+                    it assumes. `notional` alone hides how fast you trade, and
+                    10% of daily volume costs far more than 1% of it.
+    direction       Buys and sells are treated symmetrically.
     """
 
-    def round_trip_bps(self, asset: AssetId, notional: float, as_of: date) -> float:
-        """Expected round-trip cost in basis points: half-spread x 2, plus
-        slippage and market impact at this notional, plus commission."""
+    def one_way_bps(self, asset: AssetId, notional: float, as_of: date) -> float:
+        """Expected cost in basis points of trading this name ONCE: half-spread,
+        plus slippage and market impact at this notional, plus commission.
+
+        One-way rather than round-trip because the portfolio optimizer works in
+        position CHANGES, and every change is a single leg. A round-trip
+        primitive would make every caller halve it by hand, and getting that
+        wrong is a 2x error against an edge of 5-10 bps a day.
+        """
         ...
 
     def is_tradeable(self, asset: AssetId, notional: float, as_of: date) -> bool:
