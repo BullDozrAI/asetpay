@@ -9,6 +9,7 @@ green tick.
 
 from __future__ import annotations
 
+import ast
 import configparser
 import importlib.util
 import re
@@ -54,6 +55,80 @@ def test_importlinter_declares_the_two_architectural_contracts():
     sections = _importlinter_config().sections()
     contracts = [s for s in sections if s.startswith("importlinter:contract:")]
     assert len(contracts) >= 2, f"expected >=2 contracts, found {contracts}"
+
+
+# -------------------------------------------- J-01: the environments stay apart
+
+
+MUST_STAY_OUT_OF_THE_WORKSPACE = {"torch", "nautilus-trader", "nautilus_trader"}
+
+
+def test_the_heavy_dependencies_never_enter_the_shared_lock():
+    """J-01 promises separate environments. A uv WORKSPACE does not provide one.
+
+    Every workspace member resolves against a SINGLE uv.lock, so the moment
+    `models` (torch) and `backtest` (nautilus_trader) join as members they must
+    co-resolve — precisely the month-three unbuildable state the separation was
+    designed to prevent. Note that contracts' zero-dependency rule does not save
+    you here: under one resolution those two have to agree with each other
+    regardless of what contracts imports. Necessary, not sufficient.
+
+    So they belong in standalone projects carrying their own lockfiles and
+    depending on asetpay-contracts by path. This fails when someone adds them as
+    workspace members, which is months before their pins would actually collide
+    — and the collision is not a debuggable event, it is a resolver that stops.
+    """
+    lock = ROOT / "uv.lock"
+    assert lock.exists(), "uv.lock is missing — the workspace is not locked"
+
+    locked = set(re.findall(r'^name = "([^"]+)"', lock.read_text(), re.MULTILINE))
+    trapped = sorted(locked & MUST_STAY_OUT_OF_THE_WORKSPACE)
+    assert not trapped, (
+        f"{trapped} entered the shared workspace resolution. These belong in "
+        "standalone uv projects with their own lockfiles — see J-01."
+    )
+
+
+# ------------------------------------- confidence stays unproven, and unused
+
+
+def _signal_constructions_passing(keyword: str) -> list[str]:
+    """Every Signal(...) call under packages/ that passes `keyword`."""
+    found: list[str] = []
+    for py in sorted((ROOT / "packages").rglob("*.py")):
+        for node in ast.walk(ast.parse(py.read_text(), filename=str(py))):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            called = func.id if isinstance(func, ast.Name) else getattr(func, "attr", None)
+            if called == "Signal" and any(kw.arg == keyword for kw in node.keywords):
+                found.append(f"{py.relative_to(ROOT)}:{node.lineno}")
+    return found
+
+
+def test_no_agent_sets_confidence_until_it_has_been_earned():
+    """Signal.confidence may be populated only once it has been SHOWN that
+    high-confidence calls measurably outperform low-confidence ones.
+
+    Nobody has shown that. Until somebody does, a confidence number is noise
+    that downstream sizing would give weight to — so the field stays empty and
+    this guard keeps it that way.
+
+    It passes trivially today: Signal is constructed only under tests/, never
+    under packages/. That is the point. The day an agent wants confidence, it
+    has to delete this test, and deleting a test named after the reason is a
+    deliberate act rather than a quiet one.
+
+    Scans packages/ only: a test legitimately exercises the validator, including
+    the [0, 1] bound on confidence itself. And an AST check cannot see through
+    Signal(**kwargs) — this catches the honest case, which is the one that
+    happens.
+    """
+    offenders = _signal_constructions_passing("confidence")
+    assert not offenders, (
+        f"confidence is set at {offenders}, but it has never been validated as "
+        "conditional IC. See the field's docstring in contracts/signal.py."
+    )
 
 
 # ------------------------------------------------------------- the universe

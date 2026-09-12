@@ -50,7 +50,13 @@ class Signal:
     return, not calibrated to it."""
 
     horizon_days: int
-    """When this view expires."""
+    """TRADING days, not calendar days.
+
+    Resolved by the harness as rows of price data for THIS asset
+    (`shift(-horizon_days)` per asset in harness.forward_returns), so a name
+    with gaps — a halt, a thin book, a missing session — spans more calendar
+    days than this number suggests. Stated because the unit was previously
+    undefined here while the harness had already committed to one."""
 
     confidence: float | None = None
     """Omit unless validated as conditional IC."""
