@@ -81,3 +81,7 @@ universe:  ## Validate universe.txt against Alpaca's live asset list (needs keys
 
 clean:
 	rm -rf data/ .pytest_cache .mypy_cache .ruff_cache
+
+store:     ## P1-09 — materialise the fixture into the PIT store layout
+	$(PY) -c "from pathlib import Path; from asetpay_core.store import build_from_fixture; \
+	  print(build_from_fixture(Path('data/synthetic'), Path('data/store')))"
