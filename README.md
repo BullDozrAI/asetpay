@@ -135,6 +135,88 @@ Each is a real bias that has destroyed real backtests. Locations recorded in
 
 ---
 
+## The point-in-time store
+
+`packages/core/src/asetpay_core/store/pit.py` · `layout.py`
+
+`knowledge_date` is a **directory**, not just a column:
+
+```
+data/store/fundamentals/knowledge_date=2020-05-13/data.parquet
+```
+
+DuckDB's hive partitioning prunes every later directory without opening it, so
+an as-of query physically cannot read data from the future. A flat file makes
+lookahead a filter you must remember to apply; this layout makes the later rows
+absent from the scan.
+
+The as-of rule is two steps, and the second is the one people skip:
+
+```sql
+WHERE knowledge_date <= $kt
+QUALIFY row_number() OVER (
+    PARTITION BY asset_id, period_end, metric ORDER BY knowledge_date DESC
+) = 1
+```
+
+Filtering on `knowledge_date` alone returns **both** versions of a restated
+figure, and whichever row comes back first looks correct in a spot check.
+
+Prices are deduplicated the same way. A price is never revised in the synthetic
+fixture, so it looks redundant — but the snapshotter's contract is that a
+correction arrives as a later capture, and vendors reissue bars.
+
+`PitStore` and `FixtureStore` are asserted **equal** on five dates chosen to
+straddle a planted restatement and a planted delisting. That equality is what
+makes P1-10's promise real: when the fixture is retired, P2's code does not
+change.
+
+One honest gap: `resolve_ticker` reads identifiers versioned on *event* time,
+not knowledge time, so it answers "who held this ticker then" rather than "who
+did we believe held it". Closing that is P1-16, and the docstring says so.
+
+```bash
+make store    # materialise the fixture into the layout
+```
+
+---
+
+## The no-lookahead property (P1-11), and proof it can fail (P1-12)
+
+`tests/test_no_lookahead.py`
+
+Every other test asks the store for data and believes the answer — it checks
+the filter against itself. This one asks **two** stores the same question:
+
+```
+f(store.as_of(d))  ==  f(a store containing only partitions on or before d)
+```
+
+The second store is not filtered. It is built by symlinking only the partitions
+at or before `d`, so the later data is physically absent and no query mentions
+`knowledge_date` at all. A wrong `WHERE` clause, a `<` where `<=` belongs, a
+partition written under the wrong date — all show up here and nowhere else.
+Hypothesis generates the dates, because the bug is never on the date a human
+would pick.
+
+**P1-12 is the reason P1-11 is evidence.** `_LeakyView` deletes the
+knowledge-date filter, and the test asserts the property *catches* it. If that
+ever passes, P1-11 has stopped discriminating and every guarantee resting on it
+is void.
+
+A further test pins down why this bug survives review:
+`test_the_leak_is_small_which_is_why_it_survives_review` asserts the leaked
+number differs from the honest one by **under 10%**. Not a crash — a slightly
+better answer, in the flattering direction, and nobody investigates a pleasant
+surprise.
+
+Writing this test immediately found a real defect: `as_of()` on any date before
+the first filing raised `IOException`, because DuckDB's `read_parquet` throws
+when a glob matches nothing. Every real store has that period at the start of
+its life.
+
+---
+
 ## The schema makes mistakes impossible
 
 `migrations/001_security_master.sql`
