@@ -6,13 +6,22 @@
 # stops SILENTLY, which is precisely the unrecoverable failure mode that matters
 # most here. A green dashboard nobody looks at will not tell you.
 #
-# So: a second job that checks the freshness of the newest snapshot release and
-# opens a GitHub Issue if it has gone stale. Issues email you for free, which
-# makes this a real alert rather than another thing to remember to check.
+# So: a second job that checks every trading session since the first snapshot
+# has a release, and opens a GitHub Issue listing the ones that do not. Issues
+# email you for free, which makes this a real alert rather than another thing
+# to remember to check.
 #
 # Note this workflow is itself subject to the same 60-day rule. That is fine and
 # is the point of belt-and-braces: it is far less likely that BOTH stop unnoticed
 # than that one does, and the repo activity from either running resets the clock.
+#
+# HISTORY — why this reads tag names and no timestamps. The first version sorted
+# releases by `createdAt`, which is the date of the commit a tag points at, not
+# when the release was published; it measured time since the last push to main
+# and was red on 17 of its first 28 days. It also looked only at the newest
+# release, so a hole mid-history was invisible. And the `snapshot-gap` label was
+# never created, so every alarm crashed before opening an issue — the check had
+# never once delivered an alert. See asetpay_snapshotter/gaps.py.
 
 name: gap-detector
 
@@ -20,76 +29,136 @@ on:
   schedule:
     - cron: "30 12 * * *"   # daily, well after the capture window
   workflow_dispatch:
+    inputs:
+      drill_drop_session:
+        description: >-
+          DRILL: pretend this captured session (YYYY-MM-DD) is missing, to prove
+          the alert opens an issue. Run again without it to prove it closes.
+        required: false
 
 permissions:
   contents: read
   issues: write
 
+env:
+  # The first session of record. Explicit, not inferred from the oldest tag —
+  # if every release vanished, "oldest tag" would report no gaps at all.
+  FIRST_SESSION: "2026-09-01"
+  # Well above the ~250 releases a year; gaps.py refuses a listing that hits it.
+  RELEASE_LIMIT: "1000"
+  LABEL: snapshot-gap
+
 jobs:
   check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - name: Check snapshot freshness
-        id: check
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install
+        run: uv sync --package asetpay-snapshotter --frozen
+
+      - name: List snapshot releases
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          latest=$(gh release list --repo "$GITHUB_REPOSITORY" --limit 50 \
-                     --json tagName,createdAt \
-                   | jq -r '[.[] | select(.tagName | startswith("snapshot-"))]
-                            | sort_by(.createdAt) | last | .createdAt // empty')
+          gh release list --repo "$GITHUB_REPOSITORY" --limit "$RELEASE_LIMIT" \
+            --json tagName > releases.json
 
-          if [ -z "$latest" ]; then
-            echo "stale=true"      >> "$GITHUB_OUTPUT"
-            echo "age=never"       >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
+      - name: Find sessions with no snapshot
+        id: gaps
+        env:
+          # Passed through the environment, never interpolated into the script.
+          DRILL: ${{ inputs.drill_drop_session }}
+        run: |
+          set -euo pipefail
+          uv run python -m asetpay_snapshotter.gaps \
+            --releases releases.json \
+            --since "$FIRST_SESSION" \
+            --limit "$RELEASE_LIMIT" \
+            ${DRILL:+--drop-session "$DRILL"}
 
-          age=$(( ( $(date +%s) - $(date -d "$latest" +%s) ) / 86400 ))
-          echo "age=$age days" >> "$GITHUB_OUTPUT"
-          # 3 days tolerates a weekend plus one delayed run.
-          if [ "$age" -gt 3 ]; then
-            echo "stale=true"  >> "$GITHUB_OUTPUT"
-          else
-            echo "stale=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Open an issue if snapshots have stopped
-        if: steps.check.outputs.stale == 'true'
+      # Created here, every run, rather than assumed. Its absence is what kept
+      # the first version of this check from ever delivering an alert.
+      - name: Ensure the alert label exists
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          # Do not spam: reuse the open issue if one already exists.
+          gh label create "$LABEL" --repo "$GITHUB_REPOSITORY" --force \
+            --color B60205 \
+            --description "A trading session has no snapshot release (gap-detector)"
+
+      - name: Open or update the gap issue
+        if: steps.gaps.outputs.count != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MISSING: ${{ steps.gaps.outputs.missing }}
+          COUNT: ${{ steps.gaps.outputs.count }}
+          DRILL: ${{ inputs.drill_drop_session }}
+        run: |
+          set -euo pipefail
           existing=$(gh issue list --repo "$GITHUB_REPOSITORY" \
-                       --label snapshot-gap --state open --json number \
+                       --label "$LABEL" --state open --json number \
                      | jq -r '.[0].number // empty')
 
-          body=$(cat <<'EOF'
-          The most recent snapshot release is older than the freshness threshold.
-
-          **Every missed day is permanently lost** — on the free data path,
-          history not captured cannot be bought back later.
-
-          Most likely cause, in order:
-
-          1. **GitHub disabled the scheduled workflow** after 60 days of
-             repository inactivity. Re-enable it under Actions -> snapshot.
-          2. Alpaca credentials expired or the secret was rotated.
-          3. The capture job is failing — check the last few runs.
-
-          After fixing, backfill each missed day with
-          `workflow_dispatch` on the `snapshot` workflow, passing
-          `knowledge_date`.
-          EOF
-          )
+          {
+            if [ -n "$DRILL" ]; then
+              echo "> **DRILL** — $DRILL was dropped on purpose to test this alert."
+              echo "> Re-run gap-detector without the input; this issue should close."
+              echo
+            fi
+            echo "These trading sessions have no snapshot release:"
+            echo
+            for s in $MISSING; do
+              echo "- \`$s\` — backfill with \`gh workflow run snapshot.yml -f session=$s\`"
+            done
+            echo
+            echo "**Every missed day is permanently lost** once it ages out of the"
+            echo "provider's history — backfill while it is still available."
+            echo
+            echo "Most likely cause, in order:"
+            echo
+            echo "1. **GitHub disabled the scheduled workflow** after 60 days of"
+            echo "   repository inactivity. Re-enable it under Actions -> snapshot."
+            echo "2. Provider credentials expired or the secret was rotated."
+            echo "3. The capture job is failing — check its last few runs."
+            echo "4. A new market holiday is missing from market_holidays.txt"
+            echo "   (the snapshot run would have been red that morning)."
+            echo
+            echo "This issue closes itself once every session is present."
+          } > body.md
 
           if [ -n "$existing" ]; then
-            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" \
-              --body "Still stale (age: ${{ steps.check.outputs.age }})."
+            gh issue comment "$existing" --repo "$GITHUB_REPOSITORY" --body-file body.md
           else
+            title="Snapshot gap: $COUNT session(s) missing"
+            [ -n "$DRILL" ] && title="[DRILL] $title"
             gh issue create --repo "$GITHUB_REPOSITORY" \
-              --title "Snapshot gap: no capture in ${{ steps.check.outputs.age }}" \
-              --label snapshot-gap \
-              --body "$body"
+              --title "$title" --label "$LABEL" --body-file body.md
+          fi
+
+          # Red run AND an issue: the issue is the alert, the red run is the
+          # record that it fired.
+          echo "::error::$COUNT session(s) have no snapshot: $MISSING"
+          exit 1
+
+      # An open issue must always mean a real gap, or it gets ignored.
+      - name: Close the gap issue once every session is present
+        if: steps.gaps.outputs.count == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DUE: ${{ steps.gaps.outputs.due }}
+        run: |
+          set -euo pipefail
+          existing=$(gh issue list --repo "$GITHUB_REPOSITORY" \
+                       --label "$LABEL" --state open --json number \
+                     | jq -r '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue close "$existing" --repo "$GITHUB_REPOSITORY" \
+              --comment "All $DUE sessions since $FIRST_SESSION now have a snapshot. Closing."
           fi

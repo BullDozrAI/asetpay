@@ -55,6 +55,10 @@ from pathlib import Path
 
 import pandas as pd
 
+from asetpay_snapshotter.market_calendar import is_trading_day, read_holidays
+
+# Re-exported: previous_session lived here before the calendar had a module.
+from asetpay_snapshotter.market_calendar import previous_session as previous_session
 from asetpay_snapshotter.sources import PriceSource, get_source
 
 # 2: added vwap and trade_count, and made the source pluggable.
@@ -106,20 +110,6 @@ def canonical_checksum(df: pd.DataFrame) -> str:
     d = d.sort_values(by=list(d.columns), kind="mergesort").reset_index(drop=True)
     payload = d.to_csv(index=False, float_format="%.10g").encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
-
-
-def previous_session(today: date | None = None) -> date:
-    """The most recent weekday strictly before `today`.
-
-    A real implementation consults the exchange calendar; weekdays are enough
-    until the universe includes a market with different holidays, at which point
-    this becomes a genuine bug and should be replaced rather than patched.
-    """
-    d = today or datetime.now(tz=UTC).date()
-    d = date.fromordinal(d.toordinal() - 1)
-    while d.weekday() >= 5:
-        d = date.fromordinal(d.toordinal() - 1)
-    return d
 
 
 def read_delistings(path: Path) -> dict[str, date]:
@@ -290,6 +280,12 @@ def main() -> int:
         default=Path("universe_delisted.txt"),
         help="symbol,last_trading_date,reason — excluded from the coverage denominator",
     )
+    p.add_argument(
+        "--holidays-file",
+        type=Path,
+        default=Path("market_holidays.txt"),
+        help="date,name — full-day closures; a closed day has nothing to capture",
+    )
     a = p.parse_args()
 
     # No fallback universe. A default of three symbols would publish a release
@@ -306,9 +302,26 @@ def main() -> int:
     if not symbols:
         raise SystemExit(f"universe file is empty: {a.symbols_file}")
 
+    # A closed market is not a failed capture. The scheduled run asks about the
+    # weekday that just ended; if that was a holiday there is nothing to fetch,
+    # and the honest outcome is a green run that writes NO manifest — the
+    # workflow publishes only when a manifest exists. This is the only path that
+    # returns without one; the gap detector checks the result independently.
+    #
+    # An explicit --session on a closed day is different: that is an operator
+    # backfilling a day that never traded, and it should fail loudly.
+    holidays = read_holidays(a.holidays_file)
+    session = a.session or previous_session()
+    if not is_trading_day(session, holidays):
+        why = holidays.get(session, "weekend")
+        if a.session is not None:
+            raise SystemExit(f"market closed on {session} ({why}); nothing to backfill")
+        print(f"::notice::market closed on {session} ({why}); nothing to capture")
+        return 0
+
     m = capture(
         a.out,
-        a.session or previous_session(),
+        session,
         symbols,
         get_source(a.source),
         a.knowledge_date,
