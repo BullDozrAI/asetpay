@@ -6,9 +6,10 @@ For any feature f, any date d:
 
     f(store.as_of(d))  ==  f(a store containing only data from on or before d)
 
-The second store is not filtered. It is built by SYMLINKING only the partitions
-whose knowledge_date is at or before d, so the later data is physically absent
-from the directory tree. Nothing in that query mentions knowledge_date at all.
+The second store is not filtered. It is built by HARD-LINKING (copying, where
+links are unavailable) only the partitions whose knowledge_date is at or before
+d, so the later data is physically absent from the directory tree. Nothing in
+that query mentions knowledge_date at all.
 
 That distinction is the entire value of this test. Every other test in the repo
 checks the filter against itself: it asks the store for data and believes the
@@ -33,6 +34,7 @@ prove nothing about lookahead.
 from __future__ import annotations
 
 import os
+import shutil
 from collections.abc import Callable
 from datetime import date, timedelta
 from pathlib import Path
@@ -95,15 +97,31 @@ FEATURES: dict[str, Callable[[PitStoreView], object]] = {
 # ------------------------------------------------------------- truncation
 
 
+def _place(src: Path, dst: Path) -> None:
+    """Put `src` at `dst` without copying bytes, if the filesystem allows.
+
+    A hard link, not a symlink: on Windows a symlink needs admin rights or
+    Developer Mode (WinError 1314 otherwise), which broke P1-11 and P1-12 on
+    every ordinary Windows checkout. A hard link needs no privilege
+    and IS a plain file to every reader — there is no link for a glob to fail
+    to follow. Copying is the fallback for a filesystem without hard links; it
+    is slower, never wrong.
+    """
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copyfile(src, dst)
+
+
 def _truncate(full_root: Path, cut: date, dest: Path) -> Path:
     """A store containing ONLY partitions at or before `cut`.
 
-    Real directories with symlinked files inside — the point is which
-    partitions EXIST, and the later ones are simply not there. (Symlinking the
-    directories themselves would be tidier but neither pathlib's `**` nor
-    DuckDB's globbing reliably descends into a symlinked directory, so the
-    truncated store would look empty and the test would pass for the wrong
-    reason. That is the sort of false green this whole file exists to prevent.)
+    Real directories with linked files inside — the point is which partitions
+    EXIST, and the later ones are simply not there. (Linking the directories
+    themselves would be tidier but neither pathlib's `**` nor DuckDB's globbing
+    reliably descends into a symlinked directory, so the truncated store would
+    look empty and the test would pass for the wrong reason. That is the sort of
+    false green this whole file exists to prevent.)
     """
     iso = cut.isoformat()
     for table in PARTITIONED:
@@ -119,14 +137,14 @@ def _truncate(full_root: Path, cut: date, dest: Path) -> Path:
             out = dest / table / part.name
             out.mkdir(parents=True, exist_ok=True)
             for f in part.glob("*.parquet"):
-                os.symlink(f, out / f.name)
+                _place(f, out / f.name)
     for table in UNPARTITIONED:
         src = full_root / table
         if not src.exists():
             continue
         (dest / table).mkdir(parents=True, exist_ok=True)
         for f in src.glob("*.parquet"):
-            os.symlink(f, dest / table / f.name)
+            _place(f, dest / table / f.name)
     return dest
 
 
