@@ -25,7 +25,7 @@ will be unverified. `make testdb` is the target that actually runs them.
 | P1-03 | Schema with GiST exclusion constraints | `test_migrations.py` (10 tests, real Postgres) |
 | P1-05 | Snapshotter + deterministic manifest | `test_snapshotter.py` |
 | P1-06 | Scheduled GitHub Actions capture | `.github/workflows/snapshot.yml` |
-| P1-06b | Gap detector, opens an Issue when stale | `.github/workflows/gap-detector.yml` |
+| P1-06b | Gap detector: every missing session, not just a stale tip | `test_gap_detector.py`, `test_calendar.py` |
 | P1-08 | Manifest determinism | `test_snapshotter.py` |
 | P1-19 | Feature purity AST check | `scripts/check_feature_purity.py` |
 | P2-02 | FixtureStore with correct bitemporal semantics | `test_pathologies.py` |
@@ -416,6 +416,34 @@ capture with rows but coverage below 90% is refused rather than published.
 `schema_version` is **3**: `vwap` and `trade_count` are now captured. Both are
 free from both providers, both are exactly what a per-name cost model wants, and
 neither can be bought back later.
+
+### The gap detector (P1-06b), and the market calendar
+
+`gap-detector` runs daily at 12:30 UTC and checks that **every trading session
+since 2026-09-01 has a release**, not just that the newest one is recent. The
+tag names the session, so it is set arithmetic: sessions due minus sessions
+tagged. Any missing session opens a `snapshot-gap` issue listing the exact
+backfill command for each day. The issue closes itself once they are all
+present, so an open issue always means a real gap.
+
+The first version read each release's `createdAt`, which is the date of the
+commit the tag points at, not when it was published. It was really measuring
+time since the last push to main, and it was red on 17 of its first 28 days. Its
+label had also never been created, so it never delivered a single alert.
+`test_ci_gates.py` now guards both.
+
+`market_holidays.txt` is the one calendar shared by both jobs. On the morning
+after a holiday, `snapshot` is a green run that publishes nothing, and the
+detector does not count the holiday as a gap. A date outside the file's years is
+refused rather than assumed open, and `test_calendar.py` fails on 1 January if
+next year is missing.
+
+**Prove the alarm works**, since an alarm that has never fired may be unable to:
+
+```bash
+gh workflow run gap-detector.yml -f drill_drop_session=2026-09-16  # red, issue opens
+gh workflow run gap-detector.yml                                   # green, issue closes
+```
 
 ---
 

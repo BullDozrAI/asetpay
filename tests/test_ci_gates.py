@@ -57,6 +57,40 @@ def test_importlinter_declares_the_two_architectural_contracts():
     assert len(contracts) >= 2, f"expected >=2 contracts, found {contracts}"
 
 
+# ------------------------------------------- P1-06b: the gap detector's alarm
+
+
+GAP_DETECTOR = ROOT / ".github" / "workflows" / "gap-detector.yml"
+
+
+def _workflow_code(path: Path) -> str:
+    """The workflow minus comment lines — the header tells the history, and the
+    history names the field this guard forbids."""
+    lines = path.read_text(encoding="utf-8").splitlines()
+    return "\n".join(ln for ln in lines if not ln.lstrip().startswith("#"))
+
+
+def test_gap_detector_never_reads_a_release_timestamp():
+    """A release's `createdAt` is the date of the commit its tag points at, not
+    when it was published. Reading it made the detector measure time since the
+    last push to main — red on 17 of its first 28 days. The tag names the
+    session; no timestamp is needed, so none may be read."""
+    code = _workflow_code(GAP_DETECTOR)
+    for field in ("createdAt", "publishedAt"):
+        assert field not in code, f"gap-detector.yml reads {field}; use the tag name"
+
+
+def test_gap_detector_creates_its_label_before_using_it():
+    """The label never existed, so every alarm crashed at `gh issue create` and
+    the check never once delivered an alert. It must create the label itself."""
+    text = _workflow_code(GAP_DETECTOR)
+    create = text.find('gh label create "$LABEL"')
+    use = text.find('--label "$LABEL"')
+    assert create != -1, "gap-detector.yml no longer creates its label"
+    assert use != -1, "gap-detector.yml no longer labels its issue"
+    assert create < use, "the label is used before it is created"
+
+
 # -------------------------------------------- J-01: the environments stay apart
 
 
