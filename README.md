@@ -192,8 +192,8 @@ the filter against itself. This one asks **two** stores the same question:
 f(store.as_of(d))  ==  f(a store containing only partitions on or before d)
 ```
 
-The second store is not filtered. It is built by symlinking only the partitions
-at or before `d`, so the later data is physically absent and no query mentions
+The second store is not filtered. It is built by hard-linking (or copying) only
+the partitions at or before `d`, so the later data is physically absent and no query mentions
 `knowledge_date` at all. A wrong `WHERE` clause, a `<` where `<=` belongs, a
 partition written under the wrong date — all show up here and nowhere else.
 Hypothesis generates the dates, because the bug is never on the date a human
