@@ -25,3 +25,10 @@ desktop.ini
 # stray local db/data files outside data/
 *.duckdb
 *.parquet
+
+# local notes and scratch, not shared
+error/
+BUILT-SO-FAR.md
+buildflow (1).html
+message.txt
+where-we-are.md
